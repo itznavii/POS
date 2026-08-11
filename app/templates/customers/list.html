@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Customers{% endblock %}
+{% block content %}
+<h4 class="fw-bold mb-3">Customers</h4>
+<div class="card p-3 mb-3">
+<form method="POST" action="{{ url_for('customers.add_customer') }}" class="row g-2">
+  <div class="col-md-3"><input type="text" name="name" class="form-control" placeholder="Name" required></div>
+  <div class="col-md-2"><input type="text" name="phone" class="form-control" placeholder="Phone"></div>
+  <div class="col-md-2"><input type="email" name="email" class="form-control" placeholder="Email"></div>
+  <div class="col-md-2"><input type="text" name="preferred_events" class="form-control" placeholder="Preferred events"></div>
+  <div class="col-md-3"><button class="btn btn-sv w-100">Add Customer</button></div>
+</form>
+</div>
+<div class="card p-3">
+<table class="table table-sm table-hover">
+  <thead><tr><th>Name</th><th>Phone</th><th>Email</th></tr></thead>
+  <tbody>
+  {% for c in items %}
+    <tr onclick="window.location='{{ url_for('customers.detail', id=c.id) }}'" style="cursor:pointer"><td>{{ c.name }}</td><td>{{ c.phone }}</td><td>{{ c.email }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

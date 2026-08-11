@@ -1,0 +1,302 @@
+{% extends "base.html" %}
+{% block title %}POS{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card p-3">
+      <div class="d-flex gap-2 mb-3">
+        <input type="text" id="searchBox" class="form-control" placeholder="Search product...">
+        <input type="text" id="barcodeBox" class="form-control" placeholder="Scan barcode + Enter" style="max-width:220px;">
+        <select id="categoryFilter" class="form-select" style="max-width:200px;">
+          <option value="">All Categories</option>
+          {% for c in categories %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <div id="productGrid" class="row g-3"></div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card p-3 mb-3">
+      <div class="d-flex justify-content-between mb-2">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="isWalkin">
+          <label class="form-check-label" for="isWalkin">Walk-in</label>
+        </div>
+        <select id="tableSelect" class="form-select form-select-sm" style="width:140px;">
+          <option value="">No Table</option>
+          {% for t in tables %}<option value="{{ t.id }}" {% if t.status != 'available' %}disabled{% endif %}>{{ t.name }} ({{ t.status }})</option>{% endfor %}
+        </select>
+      </div>
+      <input type="text" id="customerName" class="form-control form-control-sm mb-2" placeholder="Customer name (optional)">
+    </div>
+
+    <div class="card p-3">
+      <h6 class="fw-bold">Cart</h6>
+      <div id="cartItems" style="max-height: 320px; overflow-y:auto;"></div>
+      <hr>
+      <div class="mb-2">
+        <label class="form-label mb-0 small">Promo Discount (%)</label>
+        <input type="number" id="promoDiscount" class="form-control form-control-sm" value="0" min="0" max="100">
+      </div>
+      <div class="d-flex justify-content-between"><span>Subtotal</span><span id="subtotalDisplay">₱0.00</span></div>
+      <div class="d-flex justify-content-between text-danger"><span>Discount</span><span id="discountDisplay">-₱0.00</span></div>
+      <div class="d-flex justify-content-between"><span>VAT (12%)</span><span id="vatDisplay">₱0.00</span></div>
+      <div class="d-flex justify-content-between fw-bold fs-5"><span>Total</span><span id="totalDisplay">₱0.00</span></div>
+
+      <hr>
+      <h6 class="fw-bold">Payment</h6>
+      <div id="paymentRows"></div>
+      <button class="btn btn-sm btn-outline-secondary mb-2" onclick="addPaymentRow()"><i class="bi bi-plus"></i> Add Payment (split)</button>
+      <div class="d-flex justify-content-between"><span>Amount Tendered</span><span id="tenderedDisplay">₱0.00</span></div>
+      <div class="d-flex justify-content-between"><span>Balance/Change</span><span id="changeDisplay">₱0.00</span></div>
+
+      <button class="btn btn-sv w-100 mt-3" onclick="checkout()"><i class="bi bi-check-circle"></i> Complete Sale</button>
+    </div>
+  </div>
+</div>
+
+<!-- Buffet modal -->
+<div class="modal fade" id="buffetModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title">Buffet Pricing</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body" id="buffetModalBody"></div>
+      <div class="modal-footer">
+        <button class="btn btn-sv" onclick="addBuffetToCart()">Add to Cart</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CSRF_TOKEN = "{{ csrf_token() if csrf_token is defined else '' }}";
+let products = [];
+let cart = []; // {product_id, name, type: 'regular'|'buffet', qty, price, is_senior_pwd, adult, senior, pwd, kids, free}
+let currentBuffetProduct = null;
+
+function loadProducts(q='', categoryId='') {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (categoryId) params.set('category_id', categoryId);
+  fetch("{{ url_for('pos.api_products') }}?" + params.toString())
+    .then(r => r.json())
+    .then(data => { products = data; renderGrid(); });
+}
+
+function renderGrid() {
+  const grid = document.getElementById('productGrid');
+  grid.innerHTML = '';
+  products.forEach(p => {
+    const col = document.createElement('div');
+    col.className = 'col-md-4 col-6';
+    col.innerHTML = `
+      <div class="card product-card h-100" onclick="onProductClick(${p.id})">
+        <div class="card-body text-center p-2">
+          <div style="font-size:1.8rem;"><i class="bi bi-egg-fried"></i></div>
+          <div class="fw-semibold small">${p.name}</div>
+          <div class="text-success small">${p.is_buffet ? 'Buffet' : '₱' + p.price.toFixed(2)}</div>
+        </div>
+      </div>`;
+    grid.appendChild(col);
+  });
+}
+
+document.getElementById('searchBox').addEventListener('input', e => loadProducts(e.target.value, document.getElementById('categoryFilter').value));
+document.getElementById('categoryFilter').addEventListener('change', e => loadProducts(document.getElementById('searchBox').value, e.target.value));
+document.getElementById('barcodeBox').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    const code = e.target.value.trim();
+    e.target.value = '';
+    if (!code) return;
+    fetch(`/pos/api/barcode/${encodeURIComponent(code)}`).then(r => {
+      if (!r.ok) { alert('Product not found for barcode ' + code); return null; }
+      return r.json();
+    }).then(p => { if (p) onProductClick(p.id, p); });
+  }
+});
+
+function onProductClick(id, preloaded=null) {
+  const p = preloaded || products.find(x => x.id === id);
+  if (!p) return;
+  if (p.is_buffet) { openBuffetModal(p); return; }
+  const existing = cart.find(c => c.product_id === p.id && c.type === 'regular' && !c.is_senior_pwd);
+  if (existing) existing.qty += 1;
+  else cart.push({ product_id: p.id, name: p.name, type: 'regular', qty: 1, price: p.price, is_senior_pwd: false });
+  renderCart();
+}
+
+function openBuffetModal(p) {
+  currentBuffetProduct = p;
+  const t = p.buffet_tiers;
+  document.getElementById('buffetModalBody').innerHTML = `
+    <p class="text-muted">${p.name}</p>
+    ${['adult','senior','pwd','kids','free'].map(tier => `
+      <div class="row mb-2 align-items-center">
+        <div class="col-6">${tier.charAt(0).toUpperCase()+tier.slice(1)} (₱${(t[tier]||0).toFixed(2)})</div>
+        <div class="col-6"><input type="number" min="0" value="0" class="form-control form-control-sm" id="buffet_${tier}"></div>
+      </div>`).join('')}
+  `;
+  new bootstrap.Modal(document.getElementById('buffetModal')).show();
+}
+
+function addBuffetToCart() {
+  const p = currentBuffetProduct;
+  const counts = {};
+  ['adult','senior','pwd','kids','free'].forEach(t => counts[t] = parseInt(document.getElementById('buffet_'+t).value || 0));
+  const totalPax = Object.values(counts).reduce((a,b)=>a+b,0);
+  if (totalPax <= 0) { alert('Enter at least 1 guest.'); return; }
+  cart.push({ product_id: p.id, name: p.name, type: 'buffet', ...counts, price: p.buffet_tiers.adult || 0 });
+  renderCart();
+  bootstrap.Modal.getInstance(document.getElementById('buffetModal')).hide();
+}
+
+function renderCart() {
+  const el = document.getElementById('cartItems');
+  el.innerHTML = '';
+  cart.forEach((item, idx) => {
+    if (item.type === 'regular') {
+      el.innerHTML += `
+        <div class="d-flex justify-content-between align-items-center border-bottom py-1">
+          <div>
+            <div class="small fw-semibold">${item.name}</div>
+            <div class="small text-muted">
+              <input type="number" min="1" value="${item.qty}" style="width:50px" class="form-control form-control-sm d-inline" onchange="updateQty(${idx}, this.value)">
+              x ₱${item.price.toFixed(2)}
+              <label class="ms-1"><input type="checkbox" ${item.is_senior_pwd?'checked':''} onchange="toggleSP(${idx}, this.checked)"> Sr/PWD</label>
+            </div>
+          </div>
+          <button class="btn btn-sm btn-outline-danger" onclick="removeItem(${idx})">&times;</button>
+        </div>`;
+    } else {
+      const pax = item.adult+item.senior+item.pwd+item.kids+item.free;
+      el.innerHTML += `
+        <div class="d-flex justify-content-between align-items-center border-bottom py-1">
+          <div>
+            <div class="small fw-semibold">${item.name} (Buffet)</div>
+            <div class="small text-muted">A:${item.adult} S:${item.senior} P:${item.pwd} K:${item.kids} F:${item.free} = ${pax} pax</div>
+          </div>
+          <button class="btn btn-sm btn-outline-danger" onclick="removeItem(${idx})">&times;</button>
+        </div>`;
+    }
+  });
+  recalc();
+}
+
+function updateQty(idx, val) { cart[idx].qty = Math.max(1, parseInt(val)||1); renderCart(); }
+function toggleSP(idx, val) { cart[idx].is_senior_pwd = val; renderCart(); }
+function removeItem(idx) { cart.splice(idx,1); renderCart(); }
+
+function computeTotals() {
+  let subtotal = 0, spDiscount = 0;
+  cart.forEach(item => {
+    if (item.type === 'regular') {
+      const raw = item.qty * item.price;
+      subtotal += raw;
+      if (item.is_senior_pwd) spDiscount += raw * 0.20;
+    } else {
+      // buffet totals computed server-side from tier prices; estimate client-side using adult price is imprecise,
+      // so client only shows a rough live estimate; authoritative totals come back from checkout response.
+      const p = products.find(x => x.id === item.product_id);
+      const t = p ? p.buffet_tiers : {};
+      subtotal += (item.adult*(t.adult||0)) + (item.senior*(t.senior||0)) + (item.pwd*(t.pwd||0)) + (item.kids*(t.kids||0));
+    }
+  });
+  const promoPct = parseFloat(document.getElementById('promoDiscount').value || 0);
+  const promoAmt = (subtotal - spDiscount) * (promoPct/100);
+  const totalDiscount = spDiscount + promoAmt;
+  const taxable = Math.max(0, subtotal - totalDiscount);
+  const vat = taxable * 0.12;
+  const total = taxable + vat;
+  return { subtotal, totalDiscount, vat, total };
+}
+
+function recalc() {
+  const t = computeTotals();
+  document.getElementById('subtotalDisplay').innerText = '₱'+t.subtotal.toFixed(2);
+  document.getElementById('discountDisplay').innerText = '-₱'+t.totalDiscount.toFixed(2);
+  document.getElementById('vatDisplay').innerText = '₱'+t.vat.toFixed(2);
+  document.getElementById('totalDisplay').innerText = '₱'+t.total.toFixed(2);
+  recalcPayments();
+}
+
+let paymentRowCount = 0;
+function addPaymentRow() {
+  paymentRowCount++;
+  const id = paymentRowCount;
+  const div = document.createElement('div');
+  div.className = 'input-group input-group-sm mb-1';
+  div.id = 'payrow_'+id;
+  div.innerHTML = `
+    <select class="form-select" id="paymethod_${id}">
+      <option>Cash</option><option>GCash</option><option>Bank Transfer</option><option>Credit Card</option>
+    </select>
+    <input type="number" class="form-control" placeholder="Amount" id="payamount_${id}" oninput="recalcPayments()">
+    <input type="text" class="form-control" placeholder="Ref #" id="payref_${id}">
+    <button class="btn btn-outline-danger" onclick="document.getElementById('payrow_${id}').remove(); recalcPayments();">&times;</button>
+  `;
+  document.getElementById('paymentRows').appendChild(div);
+}
+addPaymentRow();
+
+function getPayments() {
+  const rows = document.querySelectorAll('#paymentRows > div');
+  const payments = [];
+  rows.forEach(row => {
+    const id = row.id.split('_')[1];
+    const amount = parseFloat(document.getElementById('payamount_'+id).value || 0);
+    if (amount > 0) {
+      payments.push({
+        method: document.getElementById('paymethod_'+id).value,
+        amount: amount,
+        reference_number: document.getElementById('payref_'+id).value
+      });
+    }
+  });
+  return payments;
+}
+
+function recalcPayments() {
+  const payments = getPayments();
+  const tendered = payments.reduce((a,p)=>a+p.amount,0);
+  const t = computeTotals();
+  document.getElementById('tenderedDisplay').innerText = '₱'+tendered.toFixed(2);
+  document.getElementById('changeDisplay').innerText = '₱'+Math.max(0, tendered-t.total).toFixed(2);
+}
+document.getElementById('promoDiscount').addEventListener('input', recalc);
+
+function checkout() {
+  if (cart.length === 0) { alert('Cart is empty.'); return; }
+  const items = cart.map(item => item.type === 'regular'
+    ? { product_id: item.product_id, qty: item.qty, is_senior_pwd: item.is_senior_pwd }
+    : { product_id: item.product_id, adult: item.adult, senior: item.senior, pwd: item.pwd, kids: item.kids, free: item.free }
+  );
+  const payload = {
+    items,
+    promo_discount_percent: parseFloat(document.getElementById('promoDiscount').value || 0),
+    payments: getPayments(),
+    is_walkin: document.getElementById('isWalkin').checked,
+    table_id: document.getElementById('tableSelect').value || null,
+    customer_name: document.getElementById('customerName').value
+  };
+  fetch("{{ url_for('pos.checkout') }}", {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  }).then(r => r.json()).then(res => {
+    if (res.error) { alert(res.error); return; }
+    if (res.requires_approval) {
+      alert(`Sale ${res.sale_number} needs admin approval (large discount). It's on hold.`);
+    } else {
+      window.location.href = `/pos/receipt/${res.sale_id}`;
+    }
+    cart = []; renderCart();
+    document.getElementById('paymentRows').innerHTML=''; addPaymentRow();
+  }).catch(() => alert('Checkout failed. Please try again.'));
+}
+
+loadProducts();
+</script>
+{% endblock %}

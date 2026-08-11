@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Tables{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="fw-bold">Restaurant Layout</h4>
+  {% if current_user.is_admin() %}
+  <button class="btn btn-sv btn-sm" data-bs-toggle="modal" data-bs-target="#addTableModal">+ Add Table</button>
+  {% endif %}
+</div>
+<div class="d-flex flex-wrap gap-3 mb-4">
+  {% for t in tables %}
+  <div class="text-center">
+    <div class="table-tile table-{{ t.status }}" data-bs-toggle="dropdown" role="button">{{ t.name }}</div>
+    <ul class="dropdown-menu">
+      <li><h6 class="dropdown-header">{{ t.name }} ({{ t.capacity }} pax) - {{ t.status }}</h6></li>
+      {% for s in ['available','occupied','reserved','cleaning'] %}
+      <li>
+        <form method="POST" action="{{ url_for('tables_bp.update_status', id=t.id) }}">
+          <button class="dropdown-item" name="status" value="{{ s }}">Set {{ s }}</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    <small class="text-muted d-block">{{ t.capacity }} pax</small>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card p-3">
+  <h6 class="fw-bold">Transfer Table</h6>
+  <form method="POST" action="" class="row g-2" onsubmit="this.action='/tables/'+this.source.value+'/transfer'">
+    <div class="col-4"><select name="source" class="form-select form-select-sm">{% for t in tables %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select></div>
+    <div class="col-4"><select name="dest_table_id" class="form-select form-select-sm">{% for t in tables %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select></div>
+    <div class="col-4"><button class="btn btn-sm btn-outline-success">Transfer</button></div>
+  </form>
+</div>
+
+<div class="modal fade" id="addTableModal" tabindex="-1">
+  <div class="modal-dialog"><div class="modal-content">
+    <div class="modal-header"><h5>Add Table</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+    <form method="POST" action="{{ url_for('tables_bp.add_table') }}">
+      <div class="modal-body">
+        <input type="text" name="name" class="form-control mb-2" placeholder="Table name (e.g. T1)" required>
+        <input type="number" name="capacity" class="form-control" placeholder="Capacity" value="4">
+      </div>
+      <div class="modal-footer"><button class="btn btn-sv">Add</button></div>
+    </form>
+  </div></div>
+</div>
+{% endblock %}
